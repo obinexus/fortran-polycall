@@ -1,4 +1,5 @@
-# Fortran tests (scaffold)
+# Fortran tests
 
-Add a smoke test that loads `../fortran-polycallrc`, calls the adapter, and asserts a
-zero status. Mirror the reference bindings (pypolycall / rust-polycall).
+The C test verifies exact FFI forwarding. The Fortran smoke test additionally
+verifies explicit/default path conversion, NUL termination, `run=1`, and
+nonzero status propagation. Run both with `make test` or `npm test`.

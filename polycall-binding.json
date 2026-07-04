@@ -5,7 +5,11 @@
   "adapter": true,
   "ffi": true,
   "config": "fortran-polycallrc",
-  "core": "../../src",
+  "core": "../libpolycall",
+  "entrypoint": "src/fortran_polycall.f90",
+  "nativeAdapter": "src/fortran_polycall.c",
+  "build": "make",
+  "test": "npm test",
   "license": "MIT OBINexus",
-  "author": "Nnamdi Michael Okpala"
+  "author": "Nnamdi Michael Okpala <okpalan@protonmail.com>"
 }
