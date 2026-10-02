@@ -1,10 +1,11 @@
 {
   "name": "@obinexusltd/fortran-polycall",
   "version": "1.0.0",
-  "description": "Fortran ISO_C_BINDING adapter for the libpolycall 1.5.0 FFI.",
+  "description": "Fortran 2008 ISO_C_BINDING module for the Polycall core (polycall >= 1.1.0, binding ABI 1).",
   "keywords": [
     "fortran",
     "iso-c-binding",
+    "polycall",
     "libpolycall",
     "ffi",
     "native"
@@ -27,8 +28,6 @@
   "exports": {
     ".": "./index.js",
     "./src/*": "./src/*",
-    "./include/*": "./include/*",
-    "./generated/*": "./generated/*",
     "./examples/*": "./examples/*",
     "./config": "./fortran-polycallrc",
     "./manifest": "./polycall-binding.json",
@@ -37,8 +36,6 @@
   "files": [
     "index.js",
     "src/",
-    "include/",
-    "generated/",
     "examples/",
     "tests/",
     "scripts/",
@@ -46,7 +43,8 @@
     "polycall-binding.json",
     "fortran-polycallrc",
     "README.md",
-    "TODO.md"
+    "TODO.md",
+    "LICENSE"
   ],
   "directories": {
     "example": "examples",

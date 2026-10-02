@@ -1,15 +1,18 @@
 {
   "name": "fortran-polycall",
-  "version": "1.5.0",
+  "version": "1.0.0",
+  "package": "@obinexusltd/fortran-polycall",
   "language": "Fortran",
   "adapter": true,
   "ffi": true,
+  "abi": 1,
   "config": "fortran-polycallrc",
-  "core": "../libpolycall",
+  "core": "polycall >= 1.1.0 (binding ABI 1)",
+  "core_repository": "https://github.com/obinexus/polycall",
+  "repository": "https://github.com/obinexus/fortran-polycall",
   "entrypoint": "src/fortran_polycall.f90",
-  "nativeAdapter": "src/fortran_polycall.c",
   "build": "make",
-  "test": "npm test",
-  "license": "MIT OBINexus",
+  "test": "make test",
+  "license": "MIT",
   "author": "Nnamdi Michael Okpala <okpalan@protonmail.com>"
 }

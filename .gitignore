@@ -3,3 +3,6 @@
 *.mod
 *.o
 *.obj
+*.tgz
+.polycall-qa.*
+f90_cli_*

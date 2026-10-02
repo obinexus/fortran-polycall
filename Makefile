@@ -1,93 +1,74 @@
-CC := gcc
+# fortran-polycall -- GNU Make + gfortran (any Fortran 2008 compiler with
+# ISO_C_BINDING; OpenMP for the threaded tests). The installed Polycall core
+# (>= 1.1.0, binding ABI 1) is found with pkg-config
+# (PKG_CONFIG_PATH=<prefix>/lib/pkgconfig).
+ifeq ($(origin FC),default)
 FC := gfortran
-AR := ar
+endif
+AR ?= ar
+PKG_CONFIG ?= pkg-config
 
-CPPFLAGS ?=
-CPPFLAGS += -Iinclude -Igenerated
-CFLAGS ?= -O2
-CFLAGS += -std=c11 -Wall -Wextra -Wpedantic
-FFLAGS ?= -O2
-FFLAGS += -std=f2008 -Wall -Wextra -Wpedantic
+POLYCALL_LIBS ?= $(shell $(PKG_CONFIG) --libs polycall 2>/dev/null)
+
+FFLAGS ?= -O2 -g
+FFLAGS += -std=f2008 -Wall -Wextra -fimplicit-none
+OPENMP_FLAGS ?= -fopenmp
 
 BUILD_DIR := build
 LIB_DIR := lib
-C_ADAPTER_OBJ := $(BUILD_DIR)/fortran_polycall_c.o
-FORTRAN_OBJ := $(BUILD_DIR)/fortran_polycall_f.o
-MOCK_OBJ := $(BUILD_DIR)/polycall_ffi_mock.o
+MODULE_OBJ := $(BUILD_DIR)/fortran_polycall.o
 STATIC_LIB := $(LIB_DIR)/libfortran_polycall.a
-NATIVE_TEST_BIN := $(BUILD_DIR)/fortran_polycall_adapter_test
-FORTRAN_TEST_BIN := $(BUILD_DIR)/fortran_polycall_smoke
+TEST_BIN := $(BUILD_DIR)/fortran_polycall_test
 EXAMPLE_BIN := $(BUILD_DIR)/fortran-polycall
 
 ifeq ($(OS),Windows_NT)
-EXE_EXT := .exe
-NATIVE_TEST_BIN := $(NATIVE_TEST_BIN)$(EXE_EXT)
-FORTRAN_TEST_BIN := $(FORTRAN_TEST_BIN)$(EXE_EXT)
-EXAMPLE_BIN := $(EXAMPLE_BIN)$(EXE_EXT)
+TEST_BIN := $(TEST_BIN).exe
+EXAMPLE_BIN := $(EXAMPLE_BIN).exe
 endif
 
 .DEFAULT_GOAL := all
 
 .PHONY: all
-all: $(STATIC_LIB)
+all: check-toolchain $(STATIC_LIB)
+
+# A missing compiler is a SKIP (exit 77), never a success.
+.PHONY: check-toolchain
+check-toolchain:
+	@command -v $(FC) >/dev/null 2>&1 || { echo "SKIP: Fortran compiler '$(FC)' not found"; exit 77; }
+
+.PHONY: check-core
+check-core:
+	@test -n "$(POLYCALL_LIBS)" || { echo "fortran-polycall: pkg-config cannot find polycall (>= 1.1.0); set PKG_CONFIG_PATH=<prefix>/lib/pkgconfig" >&2; exit 2; }
 
 $(BUILD_DIR) $(LIB_DIR):
-ifeq ($(OS),Windows_NT)
-	@if not exist "$@" mkdir "$@"
-else
 	@mkdir -p $@
-endif
 
-$(C_ADAPTER_OBJ): src/fortran_polycall.c include/fortran_polycall.h generated/polycall/polycall_ffi.h | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+# The module is compiled with OpenMP too so its procedures are re-entrant.
+$(MODULE_OBJ): src/fortran_polycall.f90 | $(BUILD_DIR)
+	$(FC) $(FFLAGS) $(OPENMP_FLAGS) -J$(BUILD_DIR) -c $< -o $@
 
-$(FORTRAN_OBJ): src/fortran_polycall.f90 | $(BUILD_DIR)
-	$(FC) $(FFLAGS) -J$(BUILD_DIR) -I$(BUILD_DIR) -c $< -o $@
-
-$(MOCK_OBJ): tests/polycall_ffi_mock.c tests/polycall_ffi_mock.h | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -c $< -o $@
-
-$(STATIC_LIB): $(C_ADAPTER_OBJ) $(FORTRAN_OBJ) | $(LIB_DIR)
+$(STATIC_LIB): $(MODULE_OBJ) | $(LIB_DIR)
 	$(AR) rcs $@ $^
 
-$(NATIVE_TEST_BIN): src/fortran_polycall.c tests/polycall_ffi_mock.c tests/fortran_polycall_adapter_test.c | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $^ -o $@
+$(TEST_BIN): tests/fortran_polycall_test.f90 $(MODULE_OBJ) | $(BUILD_DIR)
+	$(FC) $(FFLAGS) $(OPENMP_FLAGS) -I$(BUILD_DIR) -J$(BUILD_DIR) tests/fortran_polycall_test.f90 \
+		$(MODULE_OBJ) -o $@ $(LDFLAGS) $(POLYCALL_LIBS)
 
-$(FORTRAN_TEST_BIN): $(FORTRAN_OBJ) $(C_ADAPTER_OBJ) $(MOCK_OBJ) tests/fortran_polycall_smoke.f90 | $(BUILD_DIR)
-	$(FC) $(FFLAGS) -I$(BUILD_DIR) tests/fortran_polycall_smoke.f90 \
-		$(FORTRAN_OBJ) $(C_ADAPTER_OBJ) $(MOCK_OBJ) -o $@
-
+# Real-core test incl. interop with the C CLI (exit 77 = SKIP without it).
 .PHONY: test
-test: $(NATIVE_TEST_BIN) $(FORTRAN_TEST_BIN)
-	$(NATIVE_TEST_BIN)
-	$(FORTRAN_TEST_BIN)
+test: check-toolchain check-core $(TEST_BIN)
+	sh tests/run-real.sh $(TEST_BIN) .
 
 .PHONY: example
-example: $(FORTRAN_OBJ) $(C_ADAPTER_OBJ) | $(BUILD_DIR)
-ifeq ($(OS),Windows_NT)
-	@if "$(strip $(POLYCALL_LDFLAGS))"=="" (echo Set POLYCALL_LDFLAGS to the libpolycall v1.5 linker flags & exit /b 2)
-else
-	@test -n "$(POLYCALL_LDFLAGS)" || (echo "Set POLYCALL_LDFLAGS to the libpolycall v1.5 linker flags" && exit 2)
-endif
-	$(FC) $(FFLAGS) -I$(BUILD_DIR) examples/basic.f90 \
-		$(FORTRAN_OBJ) $(C_ADAPTER_OBJ) $(POLYCALL_LDFLAGS) -o $(EXAMPLE_BIN)
+example: check-toolchain check-core $(MODULE_OBJ)
+	$(FC) $(FFLAGS) $(OPENMP_FLAGS) -I$(BUILD_DIR) examples/basic.f90 $(MODULE_OBJ) \
+		-o $(EXAMPLE_BIN) $(LDFLAGS) $(POLYCALL_LIBS)
 	$(EXAMPLE_BIN)
 
 .PHONY: verify-dry
 verify-dry:
-ifeq ($(OS),Windows_NT)
-	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-dry.ps1
-else
 	sh scripts/verify-dry.sh
-endif
 
 .PHONY: clean
 clean:
-ifeq ($(OS),Windows_NT)
-	@if exist "$(BUILD_DIR)" rmdir /s /q "$(BUILD_DIR)"
-	@if exist "$(LIB_DIR)" rmdir /s /q "$(LIB_DIR)"
-else
 	rm -rf $(BUILD_DIR) $(LIB_DIR)
-endif
-
--include $(C_ADAPTER_OBJ:.o=.d)

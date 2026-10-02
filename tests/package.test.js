@@ -15,9 +15,5 @@ assert.equal(
   require.resolve('@obinexusltd/fortran-polycall/src/fortran_polycall.f90'),
   binding.fortranModule
 );
-assert.equal(
-  require.resolve('@obinexusltd/fortran-polycall/include/fortran_polycall.h'),
-  binding.publicHeader
-);
 
 console.log('fortran-polycall npm package test: PASS');

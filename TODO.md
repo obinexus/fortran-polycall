@@ -1,12 +1,13 @@
 # TODO — fortran-polycall (Fortran)
 
-Status: implemented thin adapter for libpolycall 1.5.0.
+Status: supported (Linux, gfortran 12) -- ISO_C_BINDING module over Polycall
+binding ABI v1 (polycall >= 1.1.0).
 
-- [x] Folder structure, manifest, and `fortran-polycallrc` (shared schema)
-- [x] Generate the consumed declaration from `polycall_ffi.h`
-- [x] Implement the ISO_C_BINDING module and native adapter
-- [x] Add a runnable example under `examples/`
-- [x] Add native, Fortran, and npm smoke tests under `tests/`
-- [x] Add `scripts/verify-dry.sh` (no core duplication)
+- [x] `polycall_run_config` / `polycall_run_config_or_stop` kept (+ strict, err)
+- [x] Direct BIND(C) interfaces for the whole ABI (no C shim, no stub header)
+- [x] `type(polycall_error)` with status, strerror name, last_error detail
+- [x] Real-core tests incl. OpenMP threads and interop with the C CLI
+- [ ] Windows (MinGW gfortran) run
+- [ ] Publish `@obinexusltd/fortran-polycall` (not published yet)
 
 Do not add config parsing or runtime logic here — adapt the core only.
