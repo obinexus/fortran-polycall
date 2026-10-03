@@ -59,18 +59,50 @@ and an installed core found through pkg-config:
 
 ```sh
 export PKG_CONFIG_PATH=/opt/polycall/lib/pkgconfig LD_LIBRARY_PATH=/opt/polycall/lib
-make            # lib/libfortran_polycall.a + build/fortran_polycall.mod
-make test       # real-core test + interop with the polycall CLI
-make example    # examples/basic.f90
+make              # lib/libfortran_polycall.a + build/fortran_polycall.mod
+make test         # real-core test + interop with the polycall CLI
+make test-loader  # missing library / old library / ABI mismatch (Linux)
+make memcheck     # the real-core test under valgrind memcheck
+make example      # examples/basic.f90
 make verify-dry
 ```
 
 `make test` runs `tests/fortran_polycall_test.f90` through
 `tests/run-real.sh`, which starts `polycall peer serve` and `polycall start`.
-A missing compiler or polycall CLI is reported as SKIP (exit 77), never as
-success. See [tests/TESTS.md](tests/TESTS.md).
+A missing compiler, polycall CLI or valgrind is reported as SKIP (exit 77),
+never as success. See [tests/TESTS.md](tests/TESTS.md).
 
-Windows: not tested (no gfortran on the QA host).
+### Threads
+
+Every function may be called from several threads (OpenMP or otherwise) at
+once, as the core allows. Two gfortran defects (seen in gfortran 12 and 14)
+matter for threaded *callers*, and the module itself avoids both:
+
+- the hidden length of a `character(len=:), allocatable` **function result**
+  is kept in a static variable at each call site, so one call site of
+  `polycall_version`, `polycall_strerror` or `polycall_last_error` must not
+  run on two threads at once -- threaded code reads the status name and
+  detail from the optional `err` (`type(polycall_error)`) instead;
+- a deferred-length allocatable string referenced inside a parallel region
+  is garbage in the threads -- pass a fixed-length copy (`character(len=128)
+  :: ep; ep = endpoint`) into the region.
+
+### Loading
+
+The core is linked (`-lpolycall`), so the dynamic loader resolves
+`libpolycall.so.1` when the program starts. A missing library stops the
+program with the loader's `libpolycall.so.1: cannot open shared object file`
+(exit 127); a 1.0 library without the binding ABI v1 symbols with
+`undefined symbol: polycall_...` (exit 127); neither is a crash. A library
+that reports another binding ABI is refused: `polycall_check_abi`,
+`polycall_run_config`, `polycall_describe`, `polycall_call` and
+`polycall_peer_open*` return `POLYCALL_E_UNSUPPORTED`, and `err%detail` names
+the ABI it reported. `make test-loader` checks all three against fake
+libraries.
+
+Windows: the Makefile builds `.exe` programs, but the binding has not been
+run on Windows yet -- the QA host has no gfortran (MinGW-w64 gfortran
+needed).
 
 ## npm source package
 

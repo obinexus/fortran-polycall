@@ -7,7 +7,9 @@ binding ABI v1 (polycall >= 1.1.0).
 - [x] Direct BIND(C) interfaces for the whole ABI (no C shim, no stub header)
 - [x] `type(polycall_error)` with status, strerror name, last_error detail
 - [x] Real-core tests incl. OpenMP threads and interop with the C CLI
-- [ ] Windows (MinGW gfortran) run
+- [x] Thread-safe under gfortran (no deferred-length function calls inside)
+- [x] Loader errors (missing / old / ABI-mismatched library), valgrind run
+- [ ] Windows (MinGW gfortran) run -- needs gfortran on the Windows host
 - [ ] Publish `@obinexusltd/fortran-polycall` (not published yet)
 
 Do not add config parsing or runtime logic here — adapt the core only.
