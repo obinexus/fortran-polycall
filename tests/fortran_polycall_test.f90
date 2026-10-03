@@ -183,7 +183,7 @@ contains
 
     subroutine test_run_config()
         type(polycall_error) :: err
-        character(len=:), allocatable :: fx, json
+        character(len=:), allocatable :: fx, json, uni
         fx = root // "/tests/fixtures/"
         call expect(POLYCALL_OK, polycall_run_config(root // "/fortran-polycallrc"), &
                     "run_config: shipped fortran-polycallrc (run=1)")
@@ -211,17 +211,38 @@ contains
         call expect(POLYCALL_E_INVALID_ARGUMENT, polycall_run_config(""), "run_config: empty path")
         call expect(POLYCALL_OK, polycall_describe(root // "/fortran-polycallrc", json), "describe: OK")
         call check(json(1:1) == "{" .and. index(json, "log_level") > 0, "describe: JSON", json)
+
+        ! non-ASCII file name, spelled as its UTF-8 bytes (Fortran strings are
+        ! byte strings here) and passed to polycall_ffi_run_config unchanged
+        uni = char(195) // char(188) // "n" // char(195) // char(175) // "c" // &
+              char(195) // char(184) // "d" // char(195) // char(169) // "-" // &
+              char(233) // char(133) // char(141) // char(231) // char(189) // char(174) // &
+              "-polycallrc"
+        call expect(POLYCALL_OK, polycall_run_config(fx // uni), "run_config: non-ASCII (UTF-8) path, strict")
+        call expect(POLYCALL_OK, polycall_run_config(fx // uni, strict=.false.), &
+                    "run_config: non-ASCII (UTF-8) path, validate")
+        call expect(POLYCALL_OK, polycall_describe(fx // uni, json), "describe: non-ASCII (UTF-8) path")
+        call check(index(json, "log_level") > 0, "describe: non-ASCII (UTF-8) path JSON", json)
+        call expect(POLYCALL_E_NOT_FOUND, polycall_run_config(fx // "missing-" // uni, err=err), &
+                    "run_config: missing non-ASCII path -> E_NOT_FOUND")
+        call check(index(err%detail, "missing-" // uni) > 0, &
+                   "run_config: last_error detail keeps the UTF-8 path bytes", err%detail)
     end subroutine test_run_config
 
     subroutine test_call()
         character(len=:), allocatable :: ep, out
         type(polycall_error) :: err
+        integer :: t, bad
+        character(len=128) :: epf
         call expect(POLYCALL_E_TRANSPORT, &
                     polycall_call("127.0.0.1:1", "debug", "echo", "{}", 1500, out), &
                     "call: no runtime -> E_TRANSPORT")
         call expect(POLYCALL_E_INVALID_ARGUMENT, &
                     polycall_call("127.0.0.1:1", "debug", "echo", "{}", 0, out), &
                     "call: timeout 0 -> E_INVALID_ARGUMENT")
+        call expect(POLYCALL_E_INVALID_ARGUMENT, &
+                    polycall_call("127.0.0.1:1", "debug", "echo", "{}", 600001, out), &
+                    "call: timeout 600001 -> E_INVALID_ARGUMENT")
         ep = env("POLYCALL_RPC_ENDPOINT")
         if (len(ep) == 0) then
             call skip("call: success / unknown op / deadline / invalid input", &
@@ -236,6 +257,9 @@ contains
         call check(out == '{"echo":{"v":[1,2]}}', "call: debug.echo exact output", out)
         call expect(POLYCALL_OK, polycall_call(ep, "debug", "echo", "", 3000, out), "call: empty input")
         call check(out == '{"echo":null}', "call: empty input is sent as null", out)
+        call expect(POLYCALL_OK, polycall_call(ep, "debug", "echo", "{}", 600000, out), &
+                    "call: timeout 600000 (the maximum) accepted")
+        call check(out == '{"echo":{}}', "call: timeout 600000 output", out)
         call expect(POLYCALL_E_NOT_FOUND, polycall_call(ep, "inventory", "teleport", "{}", 3000, out, err), &
                     "call: unknown operation -> E_NOT_FOUND")
         call check(index(out, "operation.unknown") > 0, "call: unknown operation error object", out)
@@ -246,7 +270,46 @@ contains
                     "call: deadline -> E_TIMEOUT")
         call expect(POLYCALL_E_INVALID_ARGUMENT, polycall_call(ep, "debug", "echo", "{not json", 1000, out), &
                     "call: invalid input JSON -> E_INVALID_ARGUMENT")
+        ! gfortran mishandles a deferred-length allocatable string referenced
+        ! inside a parallel region (the threads see garbage): share a
+        ! fixed-length copy instead
+        epf = ep
+        bad = 0
+        !$omp parallel do num_threads(4) reduction(+:bad)
+        do t = 0, 3
+            call call_burst(t, trim(epf), bad)
+        end do
+        !$omp end parallel do
+        call check(bad == 0, "concurrent calls: 4 OpenMP threads x 20 polycall_call, exact outputs and errors", &
+                   itoa(bad) // " wrong")
     end subroutine test_call
+
+    !> One thread of concurrent calls: 20 debug.echo calls with distinct
+    !> inputs (exact outputs) and an unknown operation (status, name through
+    !> ERR). Built with internal WRITEs into fixed-length buffers only.
+    subroutine call_burst(t, ep, bad)
+        integer, intent(in) :: t
+        character(len=*), intent(in) :: ep
+        integer, intent(inout) :: bad
+        character(len=64) :: input, want
+        character(len=:), allocatable :: out
+        type(polycall_error) :: err
+        integer :: i
+        do i = 0, 19
+            write (input, '(A,I0,A,I0,A)') '{"t":', t, ',"i":', i, '}'
+            write (want, '(A,I0,A,I0,A)') '{"echo":{"t":', t, ',"i":', i, '}}'
+            if (polycall_call(ep, "debug", "echo", trim(input), 5000, out, err) /= POLYCALL_OK) then
+                bad = bad + 1
+            else if (out /= trim(want)) then
+                bad = bad + 1
+            end if
+        end do
+        if (polycall_call(ep, "inventory", "teleport", "{}", 5000, out, err) /= POLYCALL_E_NOT_FOUND) then
+            bad = bad + 1
+        else if (index(err%name, "POLYCALL_E_NOT_FOUND") /= 1 .or. index(out, "operation.unknown") == 0) then
+            bad = bad + 1
+        end if
+    end subroutine call_burst
 
     subroutine exchange(from, from_id, to, payload, mid, label)
         integer(c_int32_t), intent(in) :: from, to
@@ -263,7 +326,7 @@ contains
     end subroutine exchange
 
     subroutine test_peers()
-        integer(c_int32_t) :: a, b, so
+        integer(c_int32_t) :: a, b, so, long
         character(len=:), allocatable :: ea, eb, s, sender, id, payload, mib, json
         character(len=*), parameter :: utf8 = "h" // char(195) // char(169) // "llo " // &
             char(226) // char(156) // char(147)
@@ -346,6 +409,36 @@ contains
         st = polycall_peer_recv(b, 1000_c_int32_t, sender, id, payload, initial_capacity=4)
         call check(st == POLYCALL_OK .and. payload == "0123456789" .and. id == "m-small", &
                    "recv: 4-byte buffer -> E_TOO_LARGE kept the message queued (regrown)")
+        st = polycall_peer_send(a, eb, "0123456789", "m-exact")
+        st = polycall_peer_recv(b, 1000_c_int32_t, sender, id, payload, initial_capacity=10)
+        call check(st == POLYCALL_OK .and. payload == "0123456789" .and. id == "m-exact", &
+                   "recv: buffer of exactly the payload size")
+        call expect(POLYCALL_E_TIMEOUT, polycall_peer_recv(b, 0_c_int32_t, sender, id, payload), &
+                    "recv: poll (timeout 0) on an empty inbox -> E_TIMEOUT")
+        st = polycall_peer_send(a, eb, "queued", "m-queued")
+        st = polycall_peer_recv(b, 0_c_int32_t, sender, id, payload)
+        call check(st == POLYCALL_OK .and. id == "m-queued", "recv: poll (timeout 0) returns a queued message")
+        st = polycall_peer_send(a, eb, "queued", "m-queued-2")
+        call system_clock(t0, rate)
+        st = polycall_peer_recv(b, polycall_wait_forever, sender, id, payload)
+        call system_clock(t1)
+        call check(st == POLYCALL_OK .and. id == "m-queued-2" .and. real(t1 - t0) / real(rate) < 2.0, &
+                   "recv: polycall_wait_forever (UINT32_MAX) returns a queued message at once")
+
+        ! identifiers: 1..63 bytes; the module's buffers are 64 incl. NUL
+        call expect(POLYCALL_OK, polycall_peer_open_send_only(repeat("n", 63), long), &
+                    "ids: 63-byte node id accepted")
+        st = polycall_peer_node_id(long, s)
+        call check(st == POLYCALL_OK .and. s == repeat("n", 63), "ids: 63-byte node id round-trips", s)
+        st = polycall_peer_send(long, eb, "id63", repeat("m", 63))
+        st = polycall_peer_recv(b, 5000_c_int32_t, sender, id, payload)
+        call check(st == POLYCALL_OK .and. sender == repeat("n", 63) .and. id == repeat("m", 63), &
+                   "ids: 63-byte sender and message id arrive intact", sender // " / " // id)
+        st = polycall_peer_close(long)
+        call expect(POLYCALL_E_INVALID_ARGUMENT, polycall_peer_open_send_only(repeat("n", 64), long), &
+                    "ids: 64-byte node id -> E_INVALID_ARGUMENT")
+        call expect(POLYCALL_E_INVALID_ARGUMENT, polycall_peer_send(a, eb, "x", repeat("m", 64)), &
+                    "ids: 64-byte message id -> E_INVALID_ARGUMENT")
 
         ! send-only node
         call expect(POLYCALL_OK, polycall_peer_open_send_only("f90-sendonly", so), "send-only: open")
@@ -388,27 +481,32 @@ contains
     end subroutine test_auth_transport
 
     subroutine test_threads()
-        integer(c_int32_t) :: r, rx, tx
+        integer(c_int32_t) :: r, rx
+        integer :: bad
+        character(len=128) :: epf
         integer(c_int) :: blocked, st, fails
         character(len=:), allocatable :: sender, id, payload, ep
         character(len=64) :: seen(100)
-        integer :: t, i, j, unique
+        character(len=:), allocatable :: missing, dups
+        integer :: t, i, j, unique, ndup, nrecv
+        integer(c_int) :: last
         logical :: dup
 
         st = polycall_peer_open("f90-blocked", r)
         blocked = 1
-        !$omp parallel sections num_threads(2) private(sender, id, payload, st)
+        ! no deferred-length strings inside the regions (gfortran, see test_call)
+        !$omp parallel sections num_threads(2) private(st)
         !$omp section
-        blocked = polycall_peer_recv(r, polycall_wait_forever, sender, id, payload)
+        call blocked_recv(r, blocked)
         !$omp section
         call sleep_ms(300)
         st = polycall_peer_cancel(r)
         !$omp end parallel sections
         call expect(POLYCALL_E_CANCELLED, blocked, "cancel wakes a blocked recv -> E_CANCELLED")
         blocked = 1
-        !$omp parallel sections num_threads(2) private(sender, id, payload, st)
+        !$omp parallel sections num_threads(2) private(st)
         !$omp section
-        blocked = polycall_peer_recv(r, polycall_wait_forever, sender, id, payload)
+        call blocked_recv(r, blocked)
         !$omp section
         call sleep_ms(300)
         st = polycall_peer_close(r)
@@ -424,40 +522,141 @@ contains
 
         st = polycall_peer_open("f90-rx", rx)
         st = polycall_peer_endpoint(rx, ep)
+        epf = ep   ! fixed-length copy for the parallel region (see test_call)
         fails = 0
-        !$omp parallel do num_threads(4) private(tx, i, st) reduction(+:fails)
+        !$omp parallel do num_threads(4) reduction(+:fails)
         do t = 0, 3
-            st = polycall_peer_open_send_only("f90-tx" // itoa(t), tx)
-            if (st /= POLYCALL_OK) then
-                fails = fails + 25
-            else
-                do i = 0, 24
-                    st = polycall_peer_send(tx, ep, "t" // itoa(t) // "-" // itoa(i), &
-                                            "m-" // itoa(t) // "-" // itoa(i), 10000)
-                    if (st /= POLYCALL_OK) fails = fails + 1
-                end do
-                st = polycall_peer_close(tx)
-            end if
+            call send_burst(t, trim(epf), fails)
         end do
         !$omp end parallel do
         unique = 0
+        ndup = 0
+        nrecv = 0
+        last = POLYCALL_OK
+        dups = ""
         do i = 1, 100
             st = polycall_peer_recv(rx, 10000_c_int32_t, sender, id, payload)
+            last = st
             if (st /= POLYCALL_OK) exit
+            nrecv = nrecv + 1
             dup = .false.
             do j = 1, unique
                 if (seen(j) == sender // "/" // id) dup = .true.
             end do
-            if (.not. dup) then
+            if (dup) then
+                ndup = ndup + 1
+                dups = dups // " " // sender // "/" // id
+            else
                 unique = unique + 1
                 seen(unique) = sender // "/" // id
             end if
         end do
-        call check(unique == 100 .and. fails == 0, &
+        ! nothing more may arrive
+        st = polycall_peer_recv(rx, 300_c_int32_t, sender, id, payload)
+        if (st /= POLYCALL_E_TIMEOUT) then
+            ndup = ndup + 1
+            dups = dups // " extra:" // sender // "/" // id
+        end if
+        missing = ""
+        do t = 0, 3
+            do i = 0, 24
+                dup = .false.
+                do j = 1, unique
+                    if (seen(j) == "f90-tx" // itoa(t) // "/m-" // itoa(t) // "-" // itoa(i)) dup = .true.
+                end do
+                if (.not. dup) missing = missing // " m-" // itoa(t) // "-" // itoa(i)
+            end do
+        end do
+        call check(unique == 100 .and. fails == 0 .and. ndup == 0, &
                    "concurrent senders: 4 OpenMP threads x 25, all delivered once", &
-                   itoa(unique) // " unique, " // itoa(int(fails)) // " failures")
+                   itoa(unique) // " unique, " // itoa(nrecv) // " received, " // itoa(ndup) // &
+                   " duplicates, " // itoa(int(fails)) // " send failures, last recv status " // &
+                   itoa(int(last)) // "; missing:" // missing // "; duplicates:" // dups)
         st = polycall_peer_close(rx)
+
+        bad = 0
+        !$omp parallel do num_threads(4) reduction(+:bad)
+        do t = 0, 3
+            call node_burst(t, bad)
+        end do
+        !$omp end parallel do
+        call check(bad == 0, "concurrent node calls: 4 OpenMP threads x 50 node_id/endpoint/health/list", &
+                   itoa(bad) // " wrong")
     end subroutine test_threads
+
+    !> polycall_peer_recv(H, polycall_wait_forever) in its own frame.
+    subroutine blocked_recv(h, status)
+        integer(c_int32_t), intent(in) :: h
+        integer(c_int), intent(out) :: status
+        character(len=:), allocatable :: sender, id, payload
+        status = polycall_peer_recv(h, polycall_wait_forever, sender, id, payload)
+    end subroutine blocked_recv
+
+    !> One thread of concurrent string-returning calls on its own node.
+    subroutine node_burst(t, bad)
+        integer, intent(in) :: t
+        integer, intent(inout) :: bad
+        character(len=32) :: name
+        character(len=:), allocatable :: s, ep0, ep, json
+        integer(c_int32_t) :: h
+        integer :: i
+        write (name, '(A,I0)') "f90-c", t
+        if (polycall_peer_open(trim(name), h) /= POLYCALL_OK) then
+            bad = bad + 50
+            return
+        end if
+        if (polycall_peer_endpoint(h, ep0) /= POLYCALL_OK) bad = bad + 1
+        do i = 1, 50
+            if (polycall_peer_node_id(h, s) /= POLYCALL_OK) then
+                bad = bad + 1
+            else if (s /= trim(name)) then
+                bad = bad + 1
+            end if
+            if (polycall_peer_endpoint(h, ep) /= POLYCALL_OK) then
+                bad = bad + 1
+            else if (ep /= ep0 .or. index(ep, "127.0.0.1:") /= 1) then
+                bad = bad + 1
+            end if
+            if (polycall_peer_health(h, json) /= POLYCALL_OK) then
+                bad = bad + 1
+            else if (index(json, '"node_id":"' // trim(name) // '"') == 0) then
+                bad = bad + 1
+            end if
+            if (polycall_peer_list(h, json) /= POLYCALL_OK) then
+                bad = bad + 1
+            else if (json /= "{}") then
+                bad = bad + 1
+            end if
+        end do
+        if (polycall_peer_close(h) /= POLYCALL_OK) bad = bad + 1
+    end subroutine node_burst
+
+    !> One sender thread: its own send-only node "f90-tx<t>", 25 messages
+    !> "m-<t>-<i>" to EP. Ids are built with internal WRITEs into fixed-length
+    !> buffers: a deferred-length function such as itoa would share its
+    !> result length between threads under gfortran (see from_c in the module).
+    subroutine send_burst(t, ep, fails)
+        integer, intent(in) :: t
+        character(len=*), intent(in) :: ep
+        integer(c_int), intent(inout) :: fails
+        character(len=32) :: node, mid, text
+        integer(c_int32_t) :: tx
+        integer(c_int) :: st
+        integer :: i
+        write (node, '(A,I0)') "f90-tx", t
+        st = polycall_peer_open_send_only(trim(node), tx)
+        if (st /= POLYCALL_OK) then
+            fails = fails + 25
+            return
+        end if
+        do i = 0, 24
+            write (mid, '(A,I0,A,I0)') "m-", t, "-", i
+            write (text, '(A,I0,A,I0)') "t", t, "-", i
+            st = polycall_peer_send(tx, ep, trim(text), trim(mid), 10000)
+            if (st /= POLYCALL_OK) fails = fails + 1
+        end do
+        st = polycall_peer_close(tx)
+    end subroutine send_burst
 
     subroutine test_interop()
         character(len=:), allocatable :: cli, cli_peer, ep, sender, id, got, payload
