@@ -1,7 +1,7 @@
 # fortran-polycall
 
 Fortran binding for the [Polycall](https://github.com/obinexus/polycall)
-core, published as the npm source package `@obinexusltd/fortran-polycall`.
+core, published as the npm source package `fortran-polycall`.
 
 `src/fortran_polycall.f90` is a Fortran 2008 module that binds the core's
 **binding ABI v1** (`<polycall.h>`, `docs/BINDING_ABI.md` in the core
@@ -107,7 +107,7 @@ needed).
 ## npm source package
 
 ```sh
-npm install @obinexusltd/fortran-polycall
+npm install fortran-polycall
 ```
 
 The CommonJS entry point only exposes absolute paths (`fortranModule`,

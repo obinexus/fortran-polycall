@@ -1,7 +1,7 @@
 {
   "name": "fortran-polycall",
   "version": "1.0.0",
-  "package": "@obinexusltd/fortran-polycall",
+  "package": "fortran-polycall",
   "language": "Fortran",
   "adapter": true,
   "ffi": true,

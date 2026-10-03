@@ -10,6 +10,6 @@ binding ABI v1 (polycall >= 1.1.0).
 - [x] Thread-safe under gfortran (no deferred-length function calls inside)
 - [x] Loader errors (missing / old / ABI-mismatched library), valgrind run
 - [ ] Windows (MinGW gfortran) run -- needs gfortran on the Windows host
-- [ ] Publish `@obinexusltd/fortran-polycall` (not published yet)
+- [ ] Publish `fortran-polycall` (not published yet)
 
 Do not add config parsing or runtime logic here — adapt the core only.

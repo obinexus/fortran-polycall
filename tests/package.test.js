@@ -12,7 +12,7 @@ for (const [name, file] of Object.entries(binding)) {
 }
 
 assert.equal(
-  require.resolve('@obinexusltd/fortran-polycall/src/fortran_polycall.f90'),
+  require.resolve('fortran-polycall/src/fortran_polycall.f90'),
   binding.fortranModule
 );
 

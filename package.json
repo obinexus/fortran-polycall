@@ -1,5 +1,5 @@
 {
-  "name": "@obinexusltd/fortran-polycall",
+  "name": "fortran-polycall",
   "version": "1.0.0",
   "description": "Fortran 2008 ISO_C_BINDING module for the Polycall core (polycall >= 1.1.0, binding ABI 1).",
   "keywords": [
