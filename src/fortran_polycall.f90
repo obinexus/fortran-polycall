@@ -249,10 +249,17 @@ contains
         a(len(s) + 1) = c_null_char
     end function to_c
 
-    !> Text of a NUL-terminated c_char buffer.
-    pure function from_c(a) result(s)
+    !> S = text of a NUL-terminated c_char buffer.
+    !>
+    !> A subroutine, not a function, on purpose: gfortran (12 and 14 checked)
+    !> keeps the hidden length of a deferred-length character FUNCTION result
+    !> in a static variable at each call site, so such a call is not
+    !> re-entrant and races when two threads run it. Every procedure of this
+    !> module therefore fills deferred-length strings through intent(out)
+    !> arguments and never calls a deferred-length function internally.
+    pure subroutine from_c(a, s)
         character(kind=c_char), intent(in) :: a(:)
-        character(len=:), allocatable :: s
+        character(len=:), allocatable, intent(out) :: s
         integer :: i, n
         n = size(a)
         do i = 1, size(a)
@@ -265,7 +272,34 @@ contains
         do i = 1, n
             s(i:i) = a(i)
         end do
-    end function from_c
+    end subroutine from_c
+
+    !> NAME = polycall_strerror(STATUS) (static string of the library).
+    subroutine strerror_into(status, name)
+        integer(c_int), intent(in) :: status
+        character(len=:), allocatable, intent(out) :: name
+        type(c_ptr) :: p
+        character(kind=c_char), pointer :: chars(:)
+        integer(c_size_t) :: n
+        p = c_strerror(status)
+        n = c_strlen(p)
+        call c_f_pointer(p, chars, [n])
+        call from_c(chars, name)
+    end subroutine strerror_into
+
+    !> DETAIL = polycall_last_error() of the calling thread.
+    subroutine last_error_into(detail)
+        character(len=:), allocatable, intent(out) :: detail
+        character(kind=c_char) :: buf(2048)
+        integer(c_int) :: n
+        buf(1) = c_null_char
+        n = c_last_error(buf, int(size(buf), c_size_t))
+        if (n < 0) then
+            detail = ""
+        else
+            call from_c(buf, detail)
+        end if
+    end subroutine last_error_into
 
     subroutine set_err(err, status)
         type(polycall_error), intent(out), optional :: err
@@ -277,8 +311,8 @@ contains
             err%detail = ""
         else
             ! polycall_last_error is per thread: read it before anything else
-            err%detail = polycall_last_error()
-            err%name = polycall_strerror(status)
+            call last_error_into(err%detail)
+            call strerror_into(status, err%name)
         end if
     end subroutine set_err
 
@@ -301,7 +335,7 @@ contains
         if (got /= polycall_expected_abi) status = POLYCALL_E_UNSUPPORTED
         if (present(err)) then
             err%status = status
-            err%name = polycall_strerror(status)
+            call strerror_into(status, err%name)
             write (txt, '(I0)') got
             err%detail = "libpolycall reports binding ABI " // trim(txt) // &
                 ", fortran-polycall requires ABI 1"
@@ -309,6 +343,12 @@ contains
         end if
     end function polycall_check_abi
 
+    !> polycall_version, polycall_strerror and polycall_last_error return
+    !> character(len=:), allocatable. With gfortran the CALLER keeps the
+    !> length of such a result in a static variable (see from_c), so do not
+    !> run one call site of them from several threads at once; threaded code
+    !> gets the same name and detail race-free from the optional ERR
+    !> argument (type(polycall_error)) of every other function.
     function polycall_version() result(v)
         character(len=:), allocatable :: v
         character(kind=c_char) :: buf(64)
@@ -317,33 +357,19 @@ contains
         if (n < 0) then
             v = ""
         else
-            v = from_c(buf)
+            call from_c(buf, v)
         end if
     end function polycall_version
 
     function polycall_strerror(status) result(name)
         integer(c_int), intent(in) :: status
         character(len=:), allocatable :: name
-        type(c_ptr) :: p
-        character(kind=c_char), pointer :: chars(:)
-        integer(c_size_t) :: n
-        p = c_strerror(status)
-        n = c_strlen(p)
-        call c_f_pointer(p, chars, [n])
-        name = from_c(chars)
+        call strerror_into(status, name)
     end function polycall_strerror
 
     function polycall_last_error() result(detail)
         character(len=:), allocatable :: detail
-        character(kind=c_char) :: buf(2048)
-        integer(c_int) :: n
-        buf(1) = c_null_char
-        n = c_last_error(buf, int(size(buf), c_size_t))
-        if (n < 0) then
-            detail = ""
-        else
-            detail = from_c(buf)
-        end if
+        call last_error_into(detail)
     end function polycall_last_error
 
     ! ---- configuration -------------------------------------------------------
@@ -361,11 +387,8 @@ contains
         if (present(strict)) then
             if (.not. strict) run = 0_c_int
         end if
-        if (c_abi_version() /= polycall_expected_abi) then
-            status = POLYCALL_E_UNSUPPORTED
-            call set_err(err, status)
-            return
-        end if
+        status = polycall_check_abi(err)   ! names the ABI the library reported
+        if (status /= POLYCALL_OK) return
         if (present(config_path)) then
             status = c_run_config(to_c(trim(config_path)), run)
         else
@@ -402,6 +425,8 @@ contains
         integer :: cap, attempt
         cap = 16384
         json = ""
+        status = polycall_check_abi(err)
+        if (status /= POLYCALL_OK) return
         do attempt = 1, 4
             allocate (buf(cap))
             status = c_describe(to_c(trim(config_path)), buf, int(cap, c_int))
@@ -410,7 +435,7 @@ contains
                 return
             end if
             if (status < cap) then
-                json = from_c(buf)
+                call from_c(buf, json)
                 status = POLYCALL_OK
                 call set_err(err, status)
                 return
@@ -440,6 +465,9 @@ contains
         type(c_ptr) :: pinput
         integer :: i
 
+        output = ""
+        status = polycall_check_abi(err)
+        if (status /= POLYCALL_OK) return
         allocate (buf(polycall_max_call_output + 1))
         buf(1) = c_null_char
         pinput = c_null_ptr
@@ -455,7 +483,7 @@ contains
         status = c_call(to_c(endpoint), to_c(service), to_c(operation), pinput, &
                         int(timeout_ms, c_int32_t), buf, size(buf, kind=c_size_t), out_len)
         call set_err(err, status)
-        output = from_c(buf)
+        call from_c(buf, output)
     end function polycall_call
 
     ! ---- peer nodes ------------------------------------------------------------
@@ -487,10 +515,9 @@ contains
             end if
         end if
         handle = 0
-        status = polycall_check_abi()
-        if (status == POLYCALL_OK) then
-            status = c_peer_open(to_c(node_id), c_loc(cbind), ptoken, handle)
-        end if
+        status = polycall_check_abi(err)   ! names the ABI the library reported
+        if (status /= POLYCALL_OK) return
+        status = c_peer_open(to_c(node_id), c_loc(cbind), ptoken, handle)
         call set_err(err, status)
     end function polycall_peer_open
 
@@ -513,10 +540,9 @@ contains
             end if
         end if
         handle = 0
-        status = polycall_check_abi()
-        if (status == POLYCALL_OK) then
-            status = c_peer_open(to_c(node_id), c_null_ptr, ptoken, handle)
-        end if
+        status = polycall_check_abi(err)   ! names the ABI the library reported
+        if (status /= POLYCALL_OK) return
+        status = c_peer_open(to_c(node_id), c_null_ptr, ptoken, handle)
         call set_err(err, status)
     end function polycall_peer_open_send_only
 
@@ -537,7 +563,7 @@ contains
         buf(1) = c_null_char
         status = c_peer_endpoint(handle, buf, size(buf, kind=c_size_t))
         call set_err(err, status)
-        endpoint = from_c(buf)
+        call from_c(buf, endpoint)
     end function polycall_peer_endpoint
 
     function polycall_peer_node_id(handle, node_id, err) result(status)
@@ -549,7 +575,7 @@ contains
         buf(1) = c_null_char
         status = c_peer_node_id(handle, buf, size(buf, kind=c_size_t))
         call set_err(err, status)
-        node_id = from_c(buf)
+        call from_c(buf, node_id)
     end function polycall_peer_node_id
 
     function polycall_peer_register(handle, peer_id, endpoint, err) result(status)
@@ -591,9 +617,10 @@ contains
                 cycle
             end if
             call set_err(err, status)
-            if (status == POLYCALL_OK) json = from_c(buf)
+            if (status == POLYCALL_OK) call from_c(buf, json)
             return
         end do
+        call set_err(err, status)   ! still too small after 4 attempts
     end function polycall_peer_list
 
     function polycall_peer_ping(handle, peer, timeout_ms, err) result(status)
@@ -677,8 +704,8 @@ contains
         end do
         call set_err(err, status)
         if (status == POLYCALL_OK) then
-            sender = from_c(csender)
-            message_id = from_c(cid)
+            call from_c(csender, sender)
+            call from_c(cid, message_id)
             allocate (character(len=n) :: payload)
             do i = 1, int(n)
                 payload(i:i) = buf(i)
@@ -719,9 +746,10 @@ contains
                 cycle
             end if
             call set_err(err, status)
-            if (status == POLYCALL_OK) json = from_c(buf)
+            if (status == POLYCALL_OK) call from_c(buf, json)
             return
         end do
+        call set_err(err, status)   ! still too small after 4 attempts
     end function polycall_peer_health
 
 end module fortran_polycall
